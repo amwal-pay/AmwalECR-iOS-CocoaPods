@@ -245,6 +245,17 @@ The suite is not incidental to the platform story: `EcrDecimalTests`,
 `EcrMessageTests` and `EcrResponseReaderTests` assert this SDK against the Kotlin
 SDK's own test payloads and rounding boundaries. That is what keeps "identical on
 both platforms" a checkable claim.
+
+### Continuous integration
+
+[`codemagic.yaml`](codemagic.yaml) runs on Codemagic. Every push and pull
+request runs `pod lib lint` (iOS and macOS, with the test spec) and checks the
+podspec version against the top `CHANGELOG.md` entry. A `vX.Y.Z` tag checks the
+tag against the podspec, pushes to CocoaPods trunk — skipping, not re-pushing, a
+version that is already there — and then reads the version back from the trunk
+API. The trunk token lives in a Codemagic environment group named
+`cocoapods_credentials`, as `COCOAPODS_TRUNK_TOKEN`; see the release policy in
+[amwal-ecr-flutter](https://github.com/amwal-pay/amwal-ecr-flutter/blob/main/doc/release-policy.md).
 # AmwalECR-iOS-CocoaPods
 # AmwalECR-iOS-CocoaPods
 # AmwalECR-iOS-CocoaPods

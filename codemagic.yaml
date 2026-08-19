@@ -1,0 +1,163 @@
+# Codemagic CI for the CocoaPods distribution of the Amwal ECR SDK.
+#
+# Two workflows:
+#
+#   pod-verify   every push and pull request — `pod lib lint` builds the pod
+#                for iOS and macOS from the working tree and runs the test
+#                spec, which is the same suite the SwiftPM repository runs
+#                with `swift test`. It also checks the podspec version and the
+#                top CHANGELOG entry agree, so a release cannot be cut with the
+#                two out of step.
+#
+#   pod-release  a `vX.Y.Z` tag — pushes AmwalECR.podspec to CocoaPods trunk.
+#                Idempotent: a version already on trunk is reported and
+#                skipped, never re-pushed, so re-running a build is harmless.
+#                Ends by reading the version back from the trunk API, because
+#                trunk accepting a push and an integrator being able to
+#                `pod install` it are two different things.
+#
+# Credentials (see doc/release-policy.md in amwal-ecr-flutter, "First-time
+# setup"): a Codemagic environment group `cocoapods_credentials` holding the
+# secure variable COCOAPODS_TRUNK_TOKEN — the token `pod trunk register` wrote
+# to ~/.netrc on the workstation that registered. The `pod` CLI reads that
+# variable on its own. COCOAPODS_USERNAME / COCOAPODS_PASSWORD, the pair the
+# other Amwal pods use, are accepted as a fallback and written to ~/.netrc.
+#
+# The same sources are published to Swift Package Manager from
+# AmwalECR-iOS-SPM, which has its own codemagic.yaml. Tag both repositories with
+# the same vX.Y.Z, SwiftPM first, then this one.
+definitions:
+  env: &env
+    xcode: latest
+    cocoapods: default
+  scripts:
+    - &toolchain
+      name: Toolchain
+      script: |
+        xcodebuild -version
+        pod --version
+    - &versions_agree
+      name: Podspec version and CHANGELOG agree
+      script: |
+        set -euo pipefail
+        podspec_version="$(sed -nE "s/^[[:space:]]*s\.version[[:space:]]*=[[:space:]]*'([^']+)'.*/\1/p" AmwalECR.podspec)"
+        changelog_version="$(grep -m1 -E '^## [0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | sed -E 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
+        echo "podspec=$podspec_version  changelog=$changelog_version"
+        if [[ "$podspec_version" != "$changelog_version" ]]; then
+          echo "AmwalECR.podspec says $podspec_version but the top CHANGELOG entry is $changelog_version." >&2
+          exit 1
+        fi
+        echo "$podspec_version" > "$CM_BUILD_DIR/.release-version"
+    - &lib_lint
+      name: pod lib lint (iOS + macOS, with the test spec)
+      script: |
+        # --allow-warnings only for xcodebuild's "multiple matching
+        # destinations" notes; the lint still fails on any error.
+        pod lib lint AmwalECR.podspec --allow-warnings
+  email: &email
+    email:
+      recipients:
+        - amr.elskaan@amwal-pay.com
+      notify:
+        success: true
+        failure: true
+
+workflows:
+  pod-verify:
+    name: AmwalECR CocoaPods — verify
+    instance_type: mac_mini_m2
+    max_build_duration: 45
+    environment: *env
+    triggering:
+      events:
+        - push
+        - pull_request
+      branch_patterns:
+        - pattern: '*'
+          include: true
+          source: true
+      cancel_previous_builds: true
+    scripts:
+      - *toolchain
+      - *versions_agree
+      - *lib_lint
+    publishing: *email
+
+  pod-release:
+    name: AmwalECR CocoaPods — release to trunk (vX.Y.Z tag)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      <<: *env
+      groups:
+        - cocoapods_credentials
+    triggering:
+      events:
+        - tag
+      tag_patterns:
+        - pattern: 'v*'
+          include: true
+    scripts:
+      - *toolchain
+      - *versions_agree
+      - name: The tag names the podspec version
+        script: |
+          set -euo pipefail
+          tag="${CM_TAG:-}"
+          [[ -n "$tag" ]] || { echo "Not a tag build (CM_TAG is empty)"; exit 1; }
+          version="$(cat "$CM_BUILD_DIR/.release-version")"
+          echo "tag=$tag  podspec=$version"
+          if [[ "${tag#v}" != "$version" ]]; then
+            echo "Tag $tag does not match AmwalECR.podspec ($version)." >&2
+            echo "Tags are never moved: fix the podspec and release the next version." >&2
+            exit 1
+          fi
+      - name: Skip if this version is already on trunk
+        script: |
+          set -euo pipefail
+          version="$(cat "$CM_BUILD_DIR/.release-version")"
+          # 404 means the pod name has never been pushed; that is a first release.
+          json="$(curl -sS -f https://trunk.cocoapods.org/api/v1/pods/AmwalECR 2>/dev/null || echo '{"versions":[]}')"
+          if printf '%s' "$json" | python3 -c 'import json,sys; v=sys.argv[1]; d=json.load(sys.stdin); sys.exit(0 if any(x.get("name")==v for x in d.get("versions",[])) else 1)' "$version"; then
+            echo "AmwalECR $version is already on CocoaPods trunk — nothing to publish."
+            touch "$CM_BUILD_DIR/.already-published"
+          else
+            echo "AmwalECR $version is not on trunk yet — will push."
+          fi
+      - name: Trunk credentials
+        script: |
+          set -euo pipefail
+          [[ -f "$CM_BUILD_DIR/.already-published" ]] && { echo "skipped"; exit 0; }
+          if [[ -n "${COCOAPODS_TRUNK_TOKEN:-}" ]]; then
+            echo "Using COCOAPODS_TRUNK_TOKEN"
+          elif [[ -n "${COCOAPODS_USERNAME:-}" && -n "${COCOAPODS_PASSWORD:-}" ]]; then
+            echo "Using COCOAPODS_USERNAME / COCOAPODS_PASSWORD via ~/.netrc"
+            printf 'machine trunk.cocoapods.org\n  login %s\n  password %s\n' "$COCOAPODS_USERNAME" "$COCOAPODS_PASSWORD" > ~/.netrc
+            chmod 0600 ~/.netrc
+          else
+            echo "No trunk credentials: set COCOAPODS_TRUNK_TOKEN in the cocoapods_credentials group." >&2
+            exit 1
+          fi
+          pod trunk me
+      - name: pod trunk push
+        script: |
+          set -euo pipefail
+          [[ -f "$CM_BUILD_DIR/.already-published" ]] && { echo "skipped"; exit 0; }
+          # trunk lints the spec itself, fetching the tagged source from
+          # GitHub, so this is also the proof that the tag is pushed and public.
+          pod trunk push AmwalECR.podspec --allow-warnings
+      - name: Read the release back from trunk
+        script: |
+          set -euo pipefail
+          version="$(cat "$CM_BUILD_DIR/.release-version")"
+          for i in $(seq 1 30); do
+            if curl -sS -f https://trunk.cocoapods.org/api/v1/pods/AmwalECR 2>/dev/null \
+               | python3 -c 'import json,sys; v=sys.argv[1]; d=json.load(sys.stdin); sys.exit(0 if any(x.get("name")==v for x in d.get("versions",[])) else 1)' "$version"; then
+              echo "AmwalECR $version is resolvable from CocoaPods trunk."
+              exit 0
+            fi
+            echo "Not visible yet ($i/30), waiting…"; sleep 10
+          done
+          echo "AmwalECR $version did not appear on trunk within 5 minutes." >&2
+          exit 1
+    publishing: *email
