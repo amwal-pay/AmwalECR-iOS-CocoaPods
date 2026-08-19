@@ -246,3 +246,4 @@ The suite is not incidental to the platform story: `EcrDecimalTests`,
 SDK's own test payloads and rounding boundaries. That is what keeps "identical on
 both platforms" a checkable claim.
 # AmwalECR-iOS-CocoaPods
+# AmwalECR-iOS-CocoaPods
