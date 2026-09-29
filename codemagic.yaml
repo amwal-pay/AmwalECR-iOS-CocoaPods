@@ -103,8 +103,18 @@ workflows:
       - name: The tag names the podspec version
         script: |
           set -euo pipefail
+          # CM_TAG is set only for tag *webhooks*. A manual rebuild of a tagged
+          # commit (CM_TRIGGER_SOURCE=api) leaves it empty — recover from git.
           tag="${CM_TAG:-}"
-          [[ -n "$tag" ]] || { echo "Not a tag build (CM_TAG is empty)"; exit 1; }
+          if [[ -z "$tag" ]]; then
+            tag="$(git describe --exact-match --tags HEAD 2>/dev/null || true)"
+          fi
+          if [[ -z "$tag" ]]; then
+            echo "Not a tag build (CM_TAG is empty and HEAD is not an exact tag)." >&2
+            echo "pod-release only publishes from a vX.Y.Z tag." >&2
+            echo "Push a tag (git push origin vX.Y.Z) or re-run after a tag webhook — do not start this workflow on a branch." >&2
+            exit 1
+          fi
           version="$(cat "$CM_BUILD_DIR/.release-version")"
           echo "tag=$tag  podspec=$version"
           if [[ "${tag#v}" != "$version" ]]; then
@@ -143,9 +153,29 @@ workflows:
         script: |
           set -euo pipefail
           [[ -f "$CM_BUILD_DIR/.already-published" ]] && { echo "skipped"; exit 0; }
+          version="$(cat "$CM_BUILD_DIR/.release-version")"
           # trunk lints the spec itself, fetching the tagged source from
           # GitHub, so this is also the proof that the tag is pushed and public.
-          pod trunk push AmwalECR.podspec --allow-warnings
+          # GitHub's commit API occasionally times out after trunk has already
+          # accepted the version — retry, then treat "already on trunk" as ok.
+          on_trunk() {
+            curl -sS -f https://trunk.cocoapods.org/api/v1/pods/AmwalECR 2>/dev/null \
+              | python3 -c 'import json,sys; v=sys.argv[1]; d=json.load(sys.stdin); sys.exit(0 if any(x.get("name")==v for x in d.get("versions",[])) else 1)' "$version"
+          }
+          for attempt in 1 2 3; do
+            if pod trunk push AmwalECR.podspec --allow-warnings; then
+              exit 0
+            fi
+            echo "pod trunk push failed (attempt $attempt/3)."
+            if on_trunk; then
+              echo "AmwalECR $version is already on trunk despite the push error — treating as success."
+              touch "$CM_BUILD_DIR/.already-published"
+              exit 0
+            fi
+            [[ "$attempt" -lt 3 ]] && sleep $((attempt * 20))
+          done
+          echo "pod trunk push failed after 3 attempts and $version is not on trunk." >&2
+          exit 1
       - name: Read the release back from trunk
         script: |
           set -euo pipefail

@@ -11,12 +11,40 @@ scope the way handling card numbers would.
 ```swift
 import AmwalECR
 
-let terminal = EcrTerminal(host: "192.168.1.50", serialNumber: "P2M12345678")
+var config = EcrConfig()
+config.secureHashKey = settings.secureHashKey(for: .wifi)   // app-owned secret
 
-switch terminal.sale(amount: Decimal(string: "1.234")!) {
-case let .approved(sale):   receipt.print(rrn: sale.rrn, auth: sale.authCode)
-case let .declined(refusal): screen.show(refusal.reason)
-case let .failed(_, failure): screen.show(failure.message)   // outcome unknown
+let plan = EcrSessions.plan(
+    link: .lan(host: "192.168.1.50", port: 9100),
+    config: config
+)
+guard plan.isReady else {
+    screen.show(plan.issues.joined(separator: "\n"))
+    return
+}
+
+let session = EcrSessions.open(terminalSerial: "P2M12345678", plan: plan)
+
+switch try session.signOn() {
+case let .available(_, capabilities, _):
+    screen.showTerminal(capabilities.terminalName)
+case let .unavailable(_, reason, _, _):
+    screen.show(reason); return
+case let .failed(_, failure):
+    screen.show(failure.message); return
+}
+
+switch try session.sale(amount: Decimal(string: "1.234")!) {
+case let .approved(sale):
+    receipt.print(rrn: sale.rrn, auth: sale.authCode)
+    _ = try? session.closeReceipt()          // dismiss the terminal receipt
+case let .declined(refusal):
+    screen.show(refusal.reason)
+    if let capabilities = refusal.capabilities {
+        screen.refreshPermitted(capabilities) // profileChanged without re-signing on
+    }
+case let .failed(_, failure, _):
+    screen.show(failure.message)             // outcome may be unknown
 }
 ```
 
@@ -33,7 +61,7 @@ method and outcome for outcome. Both are used, unchanged, by the Flutter plugin
 In your `Podfile`:
 
 ```ruby
-pod 'AmwalECR', '~> 0.2.0'
+pod 'AmwalECR', '~> 0.2.2'
 ```
 
 then `pod install`.
@@ -89,7 +117,7 @@ What the SDK *does* do is ask. A lost answer is followed by one inquiry — an
 inquiry reads and nothing more — and what it found is attached to the result:
 
 ```swift
-let result = try terminal.sale(amount: total, merchantReferenceId: order.number)
+let result = try session.sale(amount: total, merchantReference: order.number)
 
 switch result {
 case let .failed(reference, failure, recovered):
@@ -97,7 +125,7 @@ case let .failed(reference, failure, recovered):
         book(transaction)              // the answer was lost; the outcome is not
     } else if failure.outcomeUnknown {
         // Still unknown. Ask again later, quoting `reference`. Never resend.
-        _ = try? terminal.inquireByReference(reference)
+        _ = try? session.inquireByReference(reference)
     }
 case .approved, .declined:
     break
@@ -109,23 +137,156 @@ with `EcrConfig.autoInquireOnFailure` if the till runs its own reconciliation.
 
 ---
 
+## Implementation
+
+Prefer **`EcrSessions.plan` → `EcrSessions.open`**. Sale, inquiry, sign-on,
+close-receipt and recovery then share one transport (LAN, USB cable, or Web
+Service) and cannot diverge on which client they build. Construct `EcrTerminal`
+or `EcrWebServiceTerminal` directly only when you already know the link.
+
+### 1. Plan and open a session
+
+**The app owns persistence** (Keychain / settings) and passes **one** value on
+`EcrConfig.secureHashKey` for the selected mode — LAN (Wi‑Fi / USB cable) and
+Web Service use different secrets, but the SDK only consumes the field you
+assign:
+
+```swift
+let secret = settings.secureHashKey(for: selectedMode)
+
+var config = EcrConfig(
+    ecrId: "TILL-01",
+    currencyCode: "512",      // OMR
+    minorUnitDigits: 3,       // baisa
+    port: 9100,
+    connectTimeout: 10,
+    responseTimeout: 120,     // cardholder time, not network time
+    probeTimeout: 3
+)
+config.secureHashKey = secret
+
+let link: EcrLink
+switch selectedMode {
+case .wifi:
+    link = .lan(host: host, port: config.port)
+case .usbCable:
+    link = .usbCable
+case .webService:
+    link = .webService(merchantId: merchantId, terminalId: terminalId)
+    config.environment = .sit   // .uat / .prod
+}
+
+let plan = EcrSessions.plan(link: link, config: config)
+guard plan.isReady else {
+    screen.show(plan.issues.joined(separator: "\n"))
+    return
+}
+
+let session = EcrSessions.open(
+    terminalSerial: serial,
+    plan: plan,
+    usbChannel: plan.usesUsbCable ? { myUsbChannel() } : nil
+)
+```
+
+`EcrConfig.secureHashKeyError` says whether a key is usable before you send
+anything; a key that is not throws `EcrInvalidArgument` at the first call rather
+than being sent unsigned.
+
+Web Service Hub bases: SIT `https://test.amwalpg.com:25452`, UAT
+`https://test.amwalpg.com:15452`, PROD `https://pos.amwalpg.com`.
+
+USB cable has no address — you supply an `EcrChannel` that already owns the byte
+stream (External Accessory / DriverKit on device). Framing, signing and messages
+are identical to Wi‑Fi.
+
+### 2. Sign on (local links)
+
+Ask what the terminal is and what it will accept before offering amounts. Reads
+only — no card, no money. Wi‑Fi and USB cable send `SIGN_ON`. A Web Service
+session answers `.unavailable` and sends nothing (the till already named that
+terminal when it opened the session).
+
+```swift
+guard session.supportsSignOn else { /* Web Service — skip */ ; return }
+
+switch try session.signOn() {
+case let .available(_, capabilities, _):
+    guard capabilities.permits(.sale) else { return }
+    if let limits = capabilities.limitsFor(.sale) {
+        amountField.clamp(min: limits.minAmount, max: limits.maxAmount)
+    }
+case let .unavailable(_, reason, _, _):
+    screen.show(reason)
+case let .failed(_, failure):
+    screen.show(failure.message)
+}
+```
+
+A later decline can carry `EcrDeclined.capabilities` when the refusal includes
+`profileChanged`, so the till can refresh what is permitted without signing on
+again.
+
+### 3. Take a payment
+
+```swift
+DispatchQueue.global(qos: .userInitiated).async {
+    let result = try? session.sale(amount: total, merchantReference: order.number)
+    DispatchQueue.main.async {
+        guard let result else { return }
+        screen.show(result)
+    }
+}
+
+// The operator gave up. This stops the wait — it does not stop the terminal,
+// and the outcome is unknown.
+session.cancel()
+```
+
+Every request is signed — HMAC-SHA256 over the sorted top-level fields, with a
+per-message nonce — and every answer is checked, both that it carries this
+till's signature and that it echoes *this* request's nonce. An answer failing
+either check is `.unauthenticated`: something else may have replied on the
+terminal's port, so the answer is discarded rather than believed. It is not a
+decline, and the transaction may well have completed.
+
+**Every call blocks** while the terminal works, which for a sale is as long as
+the cardholder takes. Run them off the main thread.
+
+### 4. Close the receipt (local links)
+
+When the result UI is dismissed, ask the terminal to put its paper/e-receipt
+away and return to idle. Moves no money; safe to repeat. Wi‑Fi and USB cable
+send `CLOSE_RECEIPT`. Web Service answers `.refused` and sends nothing.
+
+```swift
+func resultDialogDidDismiss() {
+    guard session.supportsSignOn else { return }  // same local-only gate
+    _ = try? session.closeReceipt()
+}
+```
+
+---
+
 ## Operations
 
 | | Method | Needs |
 |---|---|---|
-| Reachability | `isReachable()` | — |
-| Sale | `sale(amount:merchantReferenceId:)` | amount |
-| Void | `void(receiptNumber:originalTerminalId:merchantReferenceId:)` | the original's receipt number |
-| Refund | `refund(amount:receiptNumber:transactionDate:originalTerminalId:merchantReferenceId:)` | amount, receipt number, date |
-| Inquiry | `inquire(receiptNumber:transactionDate:originalTerminalId:merchantReferenceId:)` | receipt number, date |
-| Inquiry by reference | `inquireByReference(_:transactionDate:originalTerminalId:merchantReferenceId:)` | the original's reference |
-| E-receipt | `receipt(receiptNumber:transactionDate:originalTerminalId:merchantReferenceId:)` | receipt number, date |
+| Reachability | `probeReachability()` / `isReachable()` | local links |
+| Sign-on | `signOn(merchantReference:)` | Wi‑Fi or USB cable |
+| Sale | `sale(amount:merchantReference:)` | amount |
+| Void | `void(receiptNumber:originalTerminalId:merchantReference:)` | the original's receipt number |
+| Refund | `refund(amount:receiptNumber:transactionDate:originalTerminalId:merchantReference:)` | amount, receipt number, date |
+| Inquiry | `inquire(receiptNumber:transactionDate:originalTerminalId:merchantReference:)` | receipt number, date |
+| Inquiry by reference | `inquireByReference(_:transactionDate:originalTerminalId:merchantReference:)` | the original's reference |
+| Close receipt | `closeReceipt(merchantReference:)` | Wi‑Fi or USB cable |
+| E-receipt | `receipt(receiptNumber:transactionDate:originalTerminalId:merchantReference:)` | receipt number, date (local links) |
 
 Both inquiries read and change nothing, so they are safe to repeat, and the
 terminal answers them even while it is taking a payment — which is exactly when a
 till needs them.
 
-`merchantReferenceId` is optional everywhere and is the till's own name for the
+`merchantReference` is optional everywhere and is the till's own name for the
 transaction: an order number, a basket id, whatever already names it in the
 caller's system. Left out, the SDK generates one. Either way it comes back on the
 outcome, and it is the only identifier a till holds *before* the terminal
@@ -135,88 +296,25 @@ when nothing else does.
 The money-moving calls `throw` only for arguments that cannot be used: a
 reference over 32 characters or carrying a space, `&` or `=`; a secret that is
 not hex. Nothing is sent in that case. Everything that happens on the wire is an
-`EcrResult`, never an exception.
-
----
-
-## Signing the link
-
-A terminal refuses what it cannot verify, so in practice a till needs the secret
-Amwal issues for it. **The app owns persistence** (Keychain / settings) and
-passes **one** value on `EcrConfig.secureHashKey` for the selected mode — LAN
-(Wi‑Fi / USB cable) and Web Service use different secrets, but the SDK only
-consumes the field you assign:
-
-```swift
-// App-owned: load the secret for this terminal mode (never hardcode in source)
-let secret = settings.secureHashKey(for: selectedMode)
-
-var config = EcrConfig()
-config.secureHashKey = secret
-
-let plan = EcrSessions.plan(
-    link: .lan(host: host, port: config.port),
-    config: config
-)
-guard plan.isReady else {
-    screen.show(plan.issues.joined(separator: "\n"))
-    return
-}
-let session = EcrSessions.open(terminalSerial: serial, plan: plan)
-_ = try session.sale(amount: amount)
-```
-
-Prefer **`EcrSessions.open`** so sale, inquiry, and recovery share one transport
-dispatch (LAN / USB cable / Web Service). You can still construct `EcrTerminal`
-or `EcrWebServiceTerminal` directly when you already know the link.
-
-Web Service Hub bases: SIT `https://test.amwalpg.com:25452`, UAT
-`https://test.amwalpg.com:15452`, PROD `https://pos.amwalpg.com`.
-
-Every request is then signed — HMAC-SHA256 over the sorted top-level fields, with
-a per-message nonce — and every answer is checked, both that it carries this
-till's signature and that it echoes *this* request's nonce. An answer failing
-either check is `.unauthenticated`: something else may have replied on the
-terminal's port, so the answer is discarded rather than believed. It is not a
-decline, and the transaction may well have completed.
-
-`EcrConfig.secureHashKeyError` says whether a key is usable before you send
-anything; a key that is not throws `EcrInvalidArgument` at the first call rather
-than being sent unsigned.
-
-**Every call blocks** while the terminal works, which for a sale is as long as
-the cardholder takes. Run them off the main thread and call `cancel()` from
-another thread to stop waiting:
-
-```swift
-DispatchQueue.global(qos: .userInitiated).async {
-    let result = terminal.sale(amount: total)
-    DispatchQueue.main.async { screen.show(result) }
-}
-
-// The operator gave up. This stops the wait — it does not stop the terminal,
-// and the outcome is unknown.
-terminal.cancel()
-```
+`EcrResult` (or `EcrSignOn` / `EcrReceiptClosed`), never an exception for a
+terminal refusal.
 
 ---
 
 ## Configuration
 
 ```swift
-let terminal = EcrTerminal(
-    host: "192.168.1.50",
-    serialNumber: "P2M12345678",
-    config: EcrConfig(
-        ecrId: "TILL-01",         // how this till names itself
-        currencyCode: "512",      // OMR
-        minorUnitDigits: 3,       // baisa
-        port: 9100,
-        connectTimeout: 10,       // seconds
-        responseTimeout: 120,     // the cardholder's time, not the network's
-        probeTimeout: 3           // isReachable only
-    )
+var config = EcrConfig(
+    ecrId: "TILL-01",         // how this till names itself
+    currencyCode: "512",      // OMR
+    minorUnitDigits: 3,       // baisa
+    port: 9100,
+    connectTimeout: 10,       // seconds
+    responseTimeout: 120,     // the cardholder's time, not the network's
+    probeTimeout: 3,          // probe / isReachable only
+    environment: .sit         // Web Service only
 )
+config.secureHashKey = secret
 ```
 
 `responseTimeout` is 120 seconds because a sale waits for a human being to
@@ -232,7 +330,7 @@ amount that is off by a thousandth is a wrong charge.
 
 ```swift
 guard let amount = EcrDecimal.parse(field.text ?? "") else { return }   // no locale surprises
-terminal.sale(amount: amount)
+_ = try session.sale(amount: amount)
 ```
 
 The conversion to the wire's minor units happens once, inside the SDK, half-up —
@@ -276,12 +374,23 @@ both platforms" a checkable claim.
 
 ### Continuous integration
 
-[`codemagic.yaml`](codemagic.yaml) runs on Codemagic. Every push and pull
-request runs `pod lib lint` (iOS and macOS, with the test spec) and checks the
-podspec version against the top `CHANGELOG.md` entry. A `vX.Y.Z` tag checks the
-tag against the podspec, pushes to CocoaPods trunk — skipping, not re-pushing, a
-version that is already there — and then reads the version back from the trunk
-API. The trunk token lives in a Codemagic environment group named
+[`codemagic.yaml`](codemagic.yaml) runs on Codemagic:
+
+| Workflow | When | What it does |
+|---|---|---|
+| `pod-verify` | every push and pull request | `pod lib lint` (iOS + macOS, with the test spec) and checks the podspec version against the top `CHANGELOG.md` entry |
+| `pod-release` | a `vX.Y.Z` tag | checks the tag against the podspec, pushes to CocoaPods trunk, then reads the version back from the trunk API |
+
+`pod-release` is idempotent: a version already on trunk is skipped, never
+re-pushed. `pod trunk push` retries on transient failures (for example a GitHub
+commit API timeout after trunk has already accepted the version) and treats
+“already on trunk” as success.
+
+Start a release by pushing the tag — `git push origin vX.Y.Z` — so Codemagic
+receives a tag webhook (`CM_TAG` is set). A manual rebuild of a tagged commit
+also works: the script falls back to `git describe` when `CM_TAG` is empty. Do
+not start `pod-release` on a branch; that fails.
+
+The trunk token lives in a Codemagic environment group named
 `cocoapods_credentials`, as `COCOAPODS_TRUNK_TOKEN`; see the release policy in
 [amwal-ecr-flutter](https://github.com/amwal-pay/amwal-ecr-flutter/blob/main/doc/release-policy.md).
-# AmwalECR-iOS-CocoaPods
