@@ -139,6 +139,9 @@ with `EcrConfig.autoInquireOnFailure` if the till runs its own reconciliation.
 
 ## Implementation
 
+The same walkthrough lives in [`doc/implementation.md`](doc/implementation.md)
+for linking from other docs.
+
 Prefer **`EcrSessions.plan` → `EcrSessions.open`**. Sale, inquiry, sign-on,
 close-receipt and recovery then share one transport (LAN, USB cable, or Web
 Service) and cannot diverge on which client they build. Construct `EcrTerminal`
@@ -348,6 +351,7 @@ not duplicated here:
 
 | | |
 |---|---|
+| **[Implementation](doc/implementation.md)** | Plan, open, sign-on, sale, close receipt on this package |
 | **[Wire protocol](https://github.com/amwal-pay/ECR-simulator/blob/main/ecr-sdk/docs/protocol.md)** | The bytes on the socket |
 | **[Integration guide](https://github.com/amwal-pay/ECR-simulator/blob/main/ecr-sdk/docs/integration-guide.md)** | From an empty project to a till that reconciles properly |
 | **[Troubleshooting](https://github.com/amwal-pay/ECR-simulator/blob/main/ecr-sdk/docs/troubleshooting.md)** | Symptom → cause → fix |
