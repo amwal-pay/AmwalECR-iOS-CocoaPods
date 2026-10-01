@@ -9,17 +9,19 @@
 #   pod trunk push AmwalECR.podspec
 Pod::Spec.new do |s|
   s.name             = 'AmwalECR'
-  s.version          = '0.2.2'
-  s.summary          = 'Drive an Amwal POS terminal from an iOS app: sale, void, refund, inquiry, sign-on, e-receipt.'
+  s.version          = '0.2.3'
+  s.summary          = 'Drive an Amwal POS terminal from an iOS app: sale, void, refund, inquiry, sign-on, close-receipt, e-receipt.'
   s.description      = <<-DESC
-Speaks the Amwal ECR wire protocol over TCP on the local network, so a till
-running on iOS can drive a POS terminal directly.
+Speaks the Amwal ECR wire protocol over Wi-Fi (TCP), a caller-supplied USB cable
+channel, or Web Service (Hub HTTPS), so a till running on iOS can drive a POS
+terminal.
 
 Every operation answers with a typed outcome that keeps an unknown result apart
 from a refusal: a timeout, a lost connection or an unreadable answer is never
 reported as a decline, because the transaction may still have completed. Amounts
 are `Decimal` throughout and converted to the wire's minor units once, half-up,
-matching the Android SDK to the last minor unit.
+matching the Android SDK to the last minor unit. Sign-on, close-receipt, and
+e-receipt URL fetch are local links only.
                        DESC
   s.homepage         = 'https://github.com/amwal-pay/AmwalECR-iOS-CocoaPods'
   s.license          = { :type => 'Apache-2.0', :file => 'LICENSE' }
@@ -34,7 +36,7 @@ matching the Android SDK to the last minor unit.
 
   # The wrapper's floor, not the protocol's. Raise it here and in the SwiftPM
   # repository's Package.swift together.
-  s.ios.deployment_target = '12.0'
+  s.ios.deployment_target = '17.0'
   s.osx.deployment_target = '12.0'
   s.swift_version    = '5.5'
 
