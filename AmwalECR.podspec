@@ -9,7 +9,7 @@
 #   pod trunk push AmwalECR.podspec
 Pod::Spec.new do |s|
   s.name             = 'AmwalECR'
-  s.version          = '0.2.3'
+  s.version          = '0.3.0'
   s.summary          = 'Drive an Amwal POS terminal from an iOS app: sale, void, refund, inquiry, sign-on, close-receipt, e-receipt.'
   s.description      = <<-DESC
 Speaks the Amwal ECR wire protocol over Wi-Fi (TCP), a caller-supplied USB cable
