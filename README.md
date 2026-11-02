@@ -2,7 +2,7 @@
 
 `AmwalECR` drives an Amwal POS terminal from an iOS or macOS till: sale, void, refund, inquiry, e-receipt, close receipt, settlement, and sign-on. Wi-Fi and USB use the terminal's ECR port. Web Service uses HTTPS to the Amwal Hub. Card data stays on the terminal: your app receives a masked PAN at most.
 
-Package `AmwalECR` **0.3.0**. Open one session, call the operation, then read the result. It is the iOS counterpart of the [Kotlin SDK](https://github.com/amwal-pay/ECR-simulator/blob/main/ecr-sdk), method for method and outcome for outcome.
+Package `AmwalECR` **0.3.1**. Open one session, call the operation, then read the result. It is the iOS counterpart of the [Kotlin SDK](https://github.com/amwal-pay/ECR-simulator/blob/main/ecr-sdk), method for method and outcome for outcome.
 
 ## Install
 
@@ -17,7 +17,7 @@ Package `AmwalECR` **0.3.0**. Open one session, call the operation, then read th
 In your `Podfile`, then `pod install`:
 
 ```ruby
-pod 'AmwalECR', '~> 0.3.0'
+pod 'AmwalECR', '~> 0.3.1'
 ```
 
 Pin the version. A patch release can add API. The same sources are published as a Swift package from [AmwalECR-iOS-SPM](https://github.com/amwal-pay/AmwalECR-iOS-SPM), from iOS 12.0. Depend on one or the other, never both in the same target.
@@ -279,15 +279,15 @@ case let .failed(_, failure, _):
 }
 ```
 
-| Result                                    | Meaning                                                                                                                                                                 |
-| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.approved`                               | Money moved. `amount` is what was taken or returned. `responseCode` is `00` on a plain approval. `maskedPan` is masked.                                                |
-| `.approved` with `partialApproval`        | The issuer authorised less than you asked. `requestedAmount` is what you asked. Collect the difference before you hand over the goods.                                 |
-| `.declined`                               | The terminal answered and refused. `reason` is the text to show. `nextStep` is `.none`, except for `91`, where the terminal does not know either: inquire.             |
-| `.failed` and `.unreachable`              | Nothing was sent. Wi-Fi and USB only.                                                                                                                                   |
-| `.failed` and `failure.outcomeUnknown`    | The request went out and the answer did not settle it: timeout, connection lost, malformed answer, or a signature that does not match. The payment may have completed. |
-| `result.settled`                          | Wi-Fi or USB already inquired. `recovered` is `.found`. Record that transaction.                                                                                        |
-| `EcrInvalidArgument`                      | Wi-Fi and USB: the call was rejected before anything was sent. A merchant reference longer than 32 characters, or one that contains a space, `&`, or `=`, throws here. Web Service answers `.failed(…, .malformed, …)` instead of throwing. |
+| Result                                 | Meaning                                                                                                                                                                                                                                     |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.approved`                            | Money moved. `amount` is what was taken or returned. `responseCode` is `00` on a plain approval. `maskedPan` is masked.                                                                                                                     |
+| `.approved` with `partialApproval`     | The issuer authorised less than you asked. `requestedAmount` is what you asked. Collect the difference before you hand over the goods.                                                                                                      |
+| `.declined`                            | The terminal answered and refused. `reason` is the text to show. `nextStep` is `.none`, except for `91`, where the terminal does not know either: inquire.                                                                                  |
+| `.failed` and `.unreachable`           | Nothing was sent. Wi-Fi and USB only.                                                                                                                                                                                                       |
+| `.failed` and `failure.outcomeUnknown` | The request went out and the answer did not settle it: timeout, connection lost, malformed answer, or a signature that does not match. The payment may have completed.                                                                      |
+| `result.settled`                       | Wi-Fi or USB already inquired. `recovered` is `.found`. Record that transaction.                                                                                                                                                            |
+| `EcrInvalidArgument`                   | Wi-Fi and USB: the call was rejected before anything was sent. A merchant reference longer than 32 characters, or one that contains a space, `&`, or `=`, throws here. Web Service answers `.failed(…, .malformed, …)` instead of throwing. |
 
 An answer whose `nextStep` is `INQUIRE_BY_MERCHANT_REFERENCE` arrives as `.failed` (`.timeout` or `.connectionLost`), not `.declined`. That includes a Web Service timeout, a lost HTTP call, an empty or unreadable body, and an HTTP 5xx. `failure.outcomeUnknown` is false only for `.unreachable`.
 
@@ -336,11 +336,11 @@ On `.found`, `transaction.stan` is the receipt number. `canVoid` and `canRefund`
 
 ### Timeouts
 
-| Transport                  | Wait                                                                                                                                         |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Wi-Fi                      | `connectTimeout` 10 s, then `responseTimeout` 120 s. A lost answer can add one more response wait for the automatic inquiry.               |
-| USB                        | `responseTimeout` 120 s, the same as Wi-Fi.                                                                                                  |
-| Web Service through `plan` | A `responseTimeout` of 120 s becomes `EcrConfig.webServiceResponseTimeout` (130 s). Any other value is kept.                                 |
+| Transport                  | Wait                                                                                                                         |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Wi-Fi                      | `connectTimeout` 10 s, then `responseTimeout` 120 s. A lost answer can add one more response wait for the automatic inquiry. |
+| USB                        | `responseTimeout` 120 s, the same as Wi-Fi.                                                                                  |
+| Web Service through `plan` | A `responseTimeout` of 120 s becomes `EcrConfig.webServiceResponseTimeout` (130 s). Any other value is kept.                 |
 
 The default wait covers card present and PIN. Shortening it does not make the terminal faster; it makes a completed sale time out. `session.cancel()` stops the wait on a Wi-Fi socket only; it does not stop the terminal, and the outcome is unknown.
 
