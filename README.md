@@ -2,7 +2,7 @@
 
 `AmwalECR` drives an Amwal POS terminal from an iOS or macOS till: sale, void, refund, inquiry, e-receipt, close receipt, settlement, and sign-on. Wi-Fi and USB use the terminal's ECR port. Web Service uses HTTPS to the Amwal Hub. Card data stays on the terminal: your app receives a masked PAN at most.
 
-Package `AmwalECR` **0.3.1**. Open one session, call the operation, then read the result. It is the iOS counterpart of the [Kotlin SDK](https://github.com/amwal-pay/ECR-simulator/blob/main/ecr-sdk), method for method and outcome for outcome.
+Package `AmwalECR` **0.3.2**. Open one session, call the operation, then read the result. It is the iOS counterpart of the [Kotlin SDK](https://github.com/amwal-pay/ECR-simulator/blob/main/ecr-sdk), method for method and outcome for outcome.
 
 ## Install
 
@@ -17,7 +17,7 @@ Package `AmwalECR` **0.3.1**. Open one session, call the operation, then read th
 In your `Podfile`, then `pod install`:
 
 ```ruby
-pod 'AmwalECR', '~> 0.3.1'
+pod 'AmwalECR', '~> 0.3.2'
 ```
 
 Pin the version. A patch release can add API. The same sources are published as a Swift package from [AmwalECR-iOS-SPM](https://github.com/amwal-pay/AmwalECR-iOS-SPM), from iOS 12.0. Depend on one or the other, never both in the same target.

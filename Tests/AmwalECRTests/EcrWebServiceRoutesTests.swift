@@ -10,7 +10,7 @@ final class EcrWebServiceRoutesTests: XCTestCase {
 
         XCTAssertEqual("https://test.amwalpg.com:25452", sit)
         XCTAssertEqual("https://test.amwalpg.com:25453", uat)
-        XCTAssertEqual("https://pos.amwalpg.com", prod)
+        XCTAssertEqual("https://ecrgateway.amwalpg.com", prod)
         XCTAssertEqual(3, Set([sit, uat, prod]).count)
     }
 
